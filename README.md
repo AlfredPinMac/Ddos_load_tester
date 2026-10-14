@@ -1,187 +1,185 @@
-# 🛡️ DDoS & Load Tester con Protección Fail2Ban
+# 🛡️ DDoS & Load Tester with Fail2Ban Defense Auditing
 
-Herramienta de simulación de ataques de Denegación de Servicio (DoS/DDoS) y pruebas de estrés para evaluar la resiliencia de servicios web y la efectividad de defensas activas basadas en **Fail2Ban** e **iptables**.
-
----
-
-## 📋 Tabla de Contenidos
-1. [Descripción y Modificaciones del Script](#-descripción-y-modificaciones-del-script)
-2. [Arquitectura y Servicios Evaluados](#-arquitectura-y-servicios-evaluados)
-3. [Instalación y Requisitos](#-instalación-y-requisitos)
-4. [Parámetros y Uso de la Herramienta](#-parámetros-y-uso-de-la-herramienta)
-5. [Guía de Pruebas de Carga Paso a Paso](#-guía-de-pruebas-de-carga-paso-a-paso)
-6. [Determinación del Valor Específico de Carga Soportada](#-determinación-del-valor-específico-de-carga-soportada)
-7. [Comportamiento de Fail2Ban ante Sobrecarga](#-comportamiento-de-fail2ban-ante-sobrecarga)
-8. [Comandos para el Entregable en GitHub](#-comandos-para-el-entregable-en-github)
+Denial of Service (DoS/DDoS) simulation and stress-testing tool designed to evaluate web service resilience and the efficacy of active defenses implemented with **Fail2Ban** and **iptables**.
 
 ---
 
-## 🛠️ Descripción y Modificaciones del Script
-
-El script original proporcionado (`flood.py`) presentaba limitaciones que impedían su ejecución flexible contra servicios externos:
-* **Objetivos fijos hardcodeados**: Solo admitía los hosts internos `victim-protected` y `victim-unprotected` en la red Docker.
-* **Configuración acoplada al entorno**: Dependía únicamente de variables de entorno estáticas.
-* **Solo peticiones HTTP GET a la raíz `/`**: No permitía probar endpoints específicos de autenticación (ej. `/login`), APIs REST (ej. `/api/pokemons`), ni puertos TCP de infraestructura (ej. puerto 636 TLS/LDAPS).
-* **Falta de soporte para TLS directo**: No evaluaba servicios que implementan cifrado a nivel de transporte sin HTTP.
-
-### 🔄 Cambios implementados en `ddos.py`:
-1. **Interfaz CLI completa con `argparse`**:
-   - Soporte para argumentos posicionales y banderas estándar (`-H / --host`, `-p / --port`, `-t / --path`, `-c / --concurrency`, `-r / --rps`, `-d / --duration`).
-   - Mantenimiento de retrocompatibilidad mediante lectura de variables de entorno como respaldo (`TARGET_HOST`, `TARGET_PORT`, etc.).
-2. **Soporte multiprotocolo y métodos HTTP**:
-   - Peticiones `GET`, `POST`, `HEAD`, `PUT`, `DELETE` con envío de payload JSON (`--data`).
-   - Soporte para **HTTPS** (`--https`) y sockets **TCP / TLS directos** (`--tls`, `--tcp`) para auditar puertos como el **636 (LDAP sobre TLS)**.
-3. **Métricas avanzadas y detección de bloqueo Fail2Ban**:
-   - Desglose de respuestas por código HTTP (200, 201, 401, 403, 5xx).
-   - Detección precisa de respuestas `000` (Conexión rechazada / Timeout), las cuales señalan que las reglas de `iptables` instaladas por Fail2Ban han bloqueado exitosamente la dirección IP origen.
-   - Cálculo de latencia promedio (ms) y tasa real de peticiones procesadas por segundo (RPS).
+## 📋 Table of Contents
+1. [Overview & Script Enhancements](#-overview--script-enhancements)
+2. [Target Architecture & Protected Services](#-target-architecture--protected-services)
+3. [Prerequisites & Installation](#-prerequisites--installation)
+4. [Parameters & Tool Usage](#-parameters--tool-usage)
+5. [Step-by-Step Load Testing Guide](#-step-by-step-load-testing-guide)
+6. [Determining the Sustainable Load Capacity Threshold](#-determining-the-sustainable-load-capacity-threshold)
+7. [Fail2Ban Behavior Under High Load](#-fail2ban-behavior-under-high-load)
+8. [GitHub Submission Instructions](#-github-submission-instructions)
 
 ---
 
-## 🏗️ Arquitectura y Servicios Evaluados
+## 🛠️ Overview & Script Enhancements
 
-El entorno consta de 3 servicios principales protegidos con **Fail2Ban** y un servicio de directorio:
+The baseline demonstration script (`flood.py`) had fixed limitations that prevented flexible execution against external hosts and diverse ports:
+* **Hardcoded target names**: Only accepted internal container hostnames `victim-protected` and `victim-unprotected`.
+* **Coupled environment configuration**: Relied strictly on static environment variables.
+* **HTTP GET to root path `/` only**: Did not allow targeting specific authentication endpoints (e.g. `/login`), REST APIs (e.g. `/api/pokemons`), or raw infrastructure ports (such as LDAP over TLS on port 636).
+* **No raw TLS support**: Could not evaluate transport-layer encrypted services without HTTP wrappers.
 
-| Servicio | Contenedor | Puerto | Tipo de Protección |
+### 🔄 Enhancements Introduced in `ddos.py`:
+1. **Full CLI Interface via `argparse`**:
+   - Supports standard flags (`-H / --host`, `-p / --port`, `-t / --path`, `-c / --concurrency`, `-r / --rps`, `-d / --duration`).
+   - Retains backward compatibility by falling back to environment variables (`TARGET_HOST`, `TARGET_PORT`, etc.) when arguments are not provided.
+2. **Multi-Protocol & HTTP Method Support**:
+   - Handles `GET`, `POST`, `HEAD`, `PUT`, `DELETE` methods along with JSON payloads (`--data`).
+   - Supports **HTTPS** (`--https`) as well as direct **TCP and TLS socket probes** (`--tls`, `--tcp`) to audit ports like **636 (LDAP over TLS)**.
+3. **Advanced Telemetry & Fail2Ban Ban Detection**:
+   - Granular status code classification (200, 201, 401, 403, 5xx).
+   - Accurate tracking of `000` (Connection refused / Timeout / Dropped), indicating that active `iptables` firewall rules installed by Fail2Ban have intervened.
+   - Computes average latency (ms) and actual sustained throughput (RPS).
+
+---
+
+## 🏗️ Target Architecture & Protected Services
+
+The environment comprises three core services shielded by **Fail2Ban** plus directory infrastructure:
+
+| Service | Container Name | Port | Protection Mechanism |
 | :--- | :--- | :--- | :--- |
 | **Frontend Vue.js + Pinia** | `pokemon-frontend-protected` | `80` / `5173` | Nginx + Fail2Ban (`http-flood` jail) |
 | **Backend Pokémon API** | `pokemon-backend-protected` | `5000` | FastAPI/Uvicorn + Fail2Ban (`http-flood` jail) |
 | **LDAP Auth Service (JWT)** | `ldap-api-protected` | `8000` | FastAPI + Fail2Ban (`http-flood` jail) |
-| **LDAP con TLS (LDAPS)** | `openldap` / `ldap-api` | `636` | Fail2Ban (`ldap-tls` jail) + Reglas de filtrado `iptables` |
+| **LDAP with TLS (LDAPS)** | `openldap` / `ldap-api` | `636` | Fail2Ban (`ldap-tls` jail) + `iptables` recent rate-limiting |
 
 ---
 
-## 📦 Instalación y Requisitos
+## 📦 Prerequisites & Installation
 
-El script está construido utilizando la librería estándar de Python 3 (sin necesidad de paquetes externos adicionales):
+The script is built purely with Python 3's standard library (no third-party dependencies required):
 
 ```bash
-# Verificar versión de Python (>= 3.9)
+# Verify Python version (>= 3.9)
 python --version
 ```
 
 ---
 
-## ⚙️ Parámetros y Uso de la Herramienta
+## ⚙️ Parameters & Tool Usage
 
 ```bash
-python ddos.py [opciones]
+python ddos.py [options]
 ```
 
-### Opciones disponibles:
+### Available Options:
 
-| Argumento | Descripción | Valor por Defecto |
+| Flag | Description | Default Value |
 | :--- | :--- | :--- |
-| `-H`, `--host` | Dirección IP o nombre de host objetivo | `127.0.0.1` |
-| `-p`, `--port` | Puerto del servicio a probar | `80` |
-| `-t`, `--path` | Ruta o endpoint HTTP | `/` |
-| `-c`, `--concurrency` | Número de trabajadores/hilos paralelos | `40` |
-| `-r`, `--rps` | Límite máximo de peticiones por segundo | `50` |
-| `-d`, `--duration` | Duración total de la prueba en segundos | `20` |
-| `-m`, `--method` | Método HTTP (`GET`, `POST`, etc.) | `GET` |
-| `--data` | Cadena JSON para enviar en el cuerpo de la petición | `None` |
-| `--https` | Forzar conexión segura HTTPS | `False` |
-| `--tls` | Probar conexión socket TLS directa (ej. puerto 636) | `False` |
-| `--tcp` | Probar conexión socket TCP directa | `False` |
+| `-H`, `--host` | Target host or IP address | `127.0.0.1` |
+| `-p`, `--port` | Target port | `80` |
+| `-t`, `--path` | HTTP endpoint path | `/` |
+| `-c`, `--concurrency` | Number of concurrent worker threads | `40` |
+| `-r`, `--rps` | Maximum aggregate request rate per second | `50` |
+| `-d`, `--duration` | Total duration in seconds | `20` |
+| `-m`, `--method` | HTTP Method (`GET`, `POST`, etc.) | `GET` |
+| `--data` | JSON string payload for POST/PUT requests | `None` |
+| `--https` | Force secure HTTPS connection | `False` |
+| `--tls` | Direct TLS/SSL socket probe (e.g. port 636) | `False` |
+| `--tcp` | Direct raw TCP socket probe | `False` |
 
 ---
 
-## 🧪 Guía de Pruebas de Carga Paso a Paso
+## 🧪 Step-by-Step Load Testing Guide
 
-### 1. Prueba al Frontend Dashboard (Puerto 80 / 5173)
+### 1. Frontend Dashboard Test (Port 80 / 5173)
 
 ```bash
-# Carga normal / segura:
+# Normal / Baseline Traffic:
 python ddos.py -H localhost -p 80 -c 10 -r 20 -d 15
 
-# Simulación de Flood (Ataque):
+# Simulated Flood (Attack):
 python ddos.py -H localhost -p 80 -c 80 -r 150 -d 20
 ```
 
-### 2. Prueba al Backend Pokémon API (Puerto 5000)
+### 2. Backend Pokémon API Test (Port 5000)
 
 ```bash
-# Carga normal al endpoint /health:
+# Normal Traffic on /health endpoint:
 python ddos.py -H localhost -p 5000 -t /health -c 15 -r 30 -d 15
 
-# Simulación de Flood a la API:
-python ddos.py -H localhost -p 5000 -t / -c 60 -r 120 -d 20
+# Simulated API Flood:
+python ddos.py -H localhost -p 5000 -t /api/pokemons -c 60 -r 120 -d 20
 ```
 
-### 3. Prueba al Servicio LDAP Auth API (Puerto 8000)
+### 3. LDAP Auth Service Test (Port 8000)
 
 ```bash
-# Carga normal al endpoint de autenticación:
+# Normal Traffic on Authentication Endpoint:
 python ddos.py -H localhost -p 8000 -t /login -m POST --data '{"username":"alice","password":"wrong"}' -c 10 -r 15 -d 10
 
-# Simulación de Flood al servicio de Login:
+# Simulated Login Flood:
 python ddos.py -H localhost -p 8000 -t /login -m POST --data '{"username":"alice","password":"wrong"}' -c 60 -r 100 -d 20
 ```
 
-### 4. Prueba al Servicio LDAP con TLS (Puerto 636)
+### 4. LDAP Service with TLS Test (Port 636)
 
 ```bash
-# Prueba de estrés de conexiones socket TLS al puerto 636:
+# Stress-testing direct TLS socket connections to port 636:
 python ddos.py -H localhost -p 636 --tls -c 30 -r 50 -d 15
 ```
 
 ---
 
-## 📈 Determinación del Valor Específico de Carga Soportada
+## 📈 Determining the Sustainable Load Capacity Threshold
 
-Para cada uno de los servicios, se determinó mediante pruebas incrementales el **punto óptimo de carga sostenida** (tasa de peticiones que no satura el servicio ni activa el baneo por comportamiento anómalo) frente al **umbral de mitigación activa de Fail2Ban**:
+Through incremental benchmark iterations, the **sustainable non-blocking load threshold** (request rate handled smoothly without activating defensive rate bans) was determined against the **Fail2Ban active mitigation threshold**:
 
-### Matriz de Resultados y Capacidad:
+### Benchmark Results & Capacity Matrix:
 
-| Servicio | Concurrencia Máxima Segura | RPS Óptimo Sostenido | Latencia Promedio | Umbral de Activación Fail2Ban | Resultado con Flood (> Umbral) |
+| Service | Maximum Safe Concurrency | Optimal Sustained RPS | Average Latency | Fail2Ban Activation Threshold | Outcome Under Flood (> Threshold) |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Frontend (Nginx)** | 40 hilos | **45 - 50 req/s** | < 8 ms | 60 req / 10s | IP bloqueada vía `iptables` (`000`), servicio protegido. |
-| **Backend (FastAPI)** | 25 hilos | **30 - 35 req/s** | < 15 ms | 60 req / 10s | IP bloqueada vía `iptables` (`000`), recursos de CPU protegidos. |
-| **LDAP Auth (FastAPI)** | 20 hilos | **20 - 25 req/s** | < 22 ms | 60 req / 10s | IP bloqueada vía `iptables` (`000`), previene saturación de LDAP. |
-| **LDAP TLS (Puerto 636)** | 15 sockets | **15 - 20 conn/s** | < 12 ms | 20 conn / 10s | Regla `iptables recent` descarta paquetes SYN excedentes. |
+| **Frontend (Nginx)** | 40 threads | **45 - 50 req/s** | < 8 ms | 60 req / 10s | IP banned via `iptables` (`000`); service stays responsive. |
+| **Backend (FastAPI)** | 25 threads | **30 - 35 req/s** | < 15 ms | 60 req / 10s | IP banned via `iptables` (`000`); CPU saturation averted. |
+| **LDAP Auth (FastAPI)** | 20 threads | **20 - 25 req/s** | < 22 ms | 60 req / 10s | IP banned via `iptables` (`000`); protects OpenLDAP connection pool. |
+| **LDAP TLS (Port 636)** | 15 sockets | **15 - 20 conn/s** | < 12 ms | 20 conn / 10s | `iptables recent` rule drops excess SYN packets. |
 
-> **Conclusión del análisis de carga**:
-> * **Carga normal operativa:** Una tasa menor a **30 req/s** por cliente es atendida con el **100% de éxito (código 200/201)** y tiempos de respuesta inferiores a 20 ms.
-> * **Comportamiento ante ataque:** Al superar el umbral de **60 peticiones en una ventana de 10 segundos** (`findtime = 10s`, `maxretry = 60`), Fail2Ban detecta la anomalía en el log del servicio y genera inmediatamente una regla en `iptables` para bloquear la IP del atacante (`000 Conexión rechazada`), manteniendo el servicio en línea e inmune para el resto de usuarios legítimos.
+> **Capacity Analysis Insights**:
+> * **Standard Operating Conditions:** Single-client traffic below **30 req/s** operates with **100% success rate (200/201 OK)** and average latency under 20 ms.
+> * **Flood Attack Behavior:** Upon surpassing **60 requests within any 10-second window** (`findtime = 10s`, `maxretry = 60`), Fail2Ban identifies log patterns and dynamically injects `iptables` rules to drop packets from the attacker's IP (`000 Connection Drop`), preserving server resources for legitimate clients.
 
 ---
 
-## 🔍 Comportamiento de Fail2Ban ante Sobrecarga
+## 🔍 Fail2Ban Behavior Under High Load
 
-Para verificar el estado de las cárceles (jails) y ver las IPs baneadas en tiempo real:
+To verify active jails and inspect banned IP addresses in real time:
 
 ```bash
-# Ver estado de la cárcel HTTP en el Frontend
+# Inspect Frontend HTTP jail status
 docker compose exec pokemon-frontend fail2ban-client status http-flood
 
-# Ver estado de la cárcel HTTP en el Backend
+# Inspect Backend HTTP jail status
 docker compose exec pokemon-backend fail2ban-client status http-flood
 
-# Ver estado en el servicio LDAP Auth
+# Inspect LDAP Auth Service jails
 docker compose exec ldap-api fail2ban-client status http-flood
 docker compose exec ldap-api fail2ban-client status ldap-tls
 
-# Visualizar el registro de eventos en vivo
+# Follow live Fail2Ban logs
 docker compose exec pokemon-frontend tail -f /var/log/fail2ban.log
 ```
 
 ---
 
-## 🐙 Comandos para el Entregable en GitHub
+## 🐙 GitHub Submission Instructions
 
-Para inicializar y publicar este repositorio nuevo en GitHub:
+To push this repository to GitHub:
 
 ```bash
-# 1. Posicionarse en la carpeta del repositorio DDoS
+# 1. Navigate to the tool directory
 cd "c:\Users\jayal\Documents\Universidad\9no Semestre\Ciberseguridad\ddos-load-tester"
 
-# 2. Inicializar repositorio Git
-git init
+# 2. Stage and commit files
 git add ddos.py README.md
-git commit -m "feat: DDoS & Load testing tool with CLI arguments and Fail2Ban audit documentation"
-git branch -M main
+git commit -m "feat: Translate DDoS tool and documentation to English"
 
-# 3. Vincular con el nuevo repositorio de GitHub y subir
-# git remote add origin https://github.com/<TU_USUARIO>/<NOMBRE_REPO_DDOS>.git
+# 3. Push to remote repository
+# git remote add origin <URL_GITHUB_DDOS_REPO>
 # git push -u origin main
 ```
